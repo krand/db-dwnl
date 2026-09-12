@@ -17,6 +17,26 @@ Select **Authenticate with Dropbox**. The app opens the browser, and Dropbox sho
 
 `app.config.json` contains all app-specific OAuth and transfer properties. In a packaged app, place this file in the application's user-data directory, or set `DB_DWNL_CONFIG` to its absolute path before launching.
 
+## Packaging
+
+The project uses electron-builder for installers. Build for the current platform with:
+
+```bash
+npm run dist
+```
+
+Or build a specific target:
+
+```bash
+npm run dist:mac
+npm run dist:win
+npm run dist:linux
+```
+
+Artifacts are written to `release/`: DMG and ZIP on macOS, an NSIS setup executable on Windows, and AppImage/DEB packages on Linux. Build each platform on that platform when possible, especially for signed releases.
+
+After installing, copy `app.config.example.json` to the user-data config path reported by the app and set `dropbox.appKey`. Do not package access tokens or `settings.bin`; they are created per user after authentication.
+
 ## Download behaviour
 
 - The Dropbox tree is loaded on demand.
