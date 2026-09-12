@@ -21,7 +21,8 @@ Select **Authenticate with Dropbox**. The app opens the browser, and Dropbox sho
 
 - The Dropbox tree is loaded on demand.
 - File and folder selections are expanded into a transfer queue.
-- The official Dropbox SDK writes downloads to `.part` files, retries recoverable failures, and validates completed content before the file is committed.
+- The official Dropbox SDK streams downloads to `.part` files, uses ranged parallel requests for large files (including 10 GB files), resumes interrupted transfers, retries recoverable failures, and validates completed content before the file is committed.
+- Before each download, the app checks the destination volume for enough free space, accounting for any existing `.part` file.
 - Existing successful files are skipped when their size matches Dropbox metadata.
 
 Credentials are stored using Electron's operating-system-backed `safeStorage` facility where the platform provides it.

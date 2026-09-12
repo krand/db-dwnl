@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
 import { Dropbox, downloadFile } from 'dropbox'
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, stat, statfs, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 
 const SETTINGS_FILE = () => join(app.getPath('userData'), 'settings.bin')
@@ -130,6 +130,44 @@ async function client(): Promise<Dropbox> {
   return new Dropbox({ accessToken: await accessToken() })
 }
 
+function isTransientNetworkError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  if (error.message === 'fetch failed') return true
+  const cause = (error as Error & { cause?: unknown }).cause
+  if (!cause || typeof cause !== 'object' || !('code' in cause)) return false
+  const code = (cause as { code?: unknown }).code
+  return typeof code === 'string' && ['ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'ENETUNREACH', 'ETIMEDOUT'].includes(code)
+}
+
+function errorDescription(error: unknown): string {
+  if (!(error instanceof Error)) return String(error)
+  const cause = (error as Error & { cause?: unknown }).cause
+  if (cause instanceof Error && cause.message) return `${error.message} (${cause.message})`
+  if (cause && typeof cause === 'object' && 'code' in cause) {
+    const code = (cause as { code?: unknown }).code
+    if (typeof code === 'string') return `${error.message} (${code})`
+  }
+  return error.message
+}
+
+async function withNetworkRetry<T>(operation: () => Promise<T>, description: string): Promise<T> {
+  const delays = [250, 750, 1500]
+  let lastError: unknown
+  for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    try {
+      return await operation()
+    } catch (error) {
+      lastError = error
+      if (!isTransientNetworkError(error)) {
+        throw new Error(`${description} failed: ${errorDescription(error)}`)
+      }
+      if (attempt === delays.length) break
+      await new Promise((resolve) => setTimeout(resolve, delays[attempt]))
+    }
+  }
+  throw new Error(`${description} failed after ${delays.length + 1} attempts: ${errorDescription(lastError)}`)
+}
+
 async function beginAuthentication(): Promise<string> {
   const config = await validConfig()
   const verifier = pkceVerifier()
@@ -172,24 +210,39 @@ function toEntry(entry: any): DropboxEntry {
 
 async function listFolder(path: string): Promise<DropboxEntry[]> {
   const dbx = await client()
-  const { result } = await dbx.filesListFolder({ path, include_deleted: false })
+  const { result } = await withNetworkRetry(
+    () => dbx.filesListFolder({ path, include_deleted: false }),
+    `Listing Dropbox folder ${path || '/'}`
+  )
   return result.entries.map(toEntry).sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name))
 }
 
 async function listFolderRecursive(path: string): Promise<DropboxEntry[]> {
   const dbx = await client()
-  let { result } = await dbx.filesListFolder({ path, recursive: true, include_deleted: false })
+  let { result } = await withNetworkRetry(
+    () => dbx.filesListFolder({ path, recursive: true, include_deleted: false }),
+    `Listing Dropbox folder ${path || '/'}`
+  )
   const entries = [...result.entries]
   while (result.has_more) {
-    const continuation = await dbx.filesListFolderContinue({ cursor: result.cursor })
+    const continuation = await withNetworkRetry(
+      () => dbx.filesListFolderContinue({ cursor: result.cursor }),
+      `Continuing Dropbox folder listing ${path || '/'}`
+    )
     result = continuation.result
     entries.push(...result.entries)
   }
   return entries.map(toEntry)
 }
 
+function normalizedDropboxPath(path: string): string {
+  if (!path) return ''
+  const normalized = path.replace(/\\+/g, '/').replace(/\/+/g, '/')
+  return normalized.length > 1 ? normalized.replace(/\/$/, '') : normalized
+}
+
 function safeRelative(base: string, remotePath: string): string {
-  const rel = relative(base || sep, remotePath)
+  const rel = relative(normalizedDropboxPath(base) || sep, normalizedDropboxPath(remotePath))
   if (!rel || rel.startsWith('..') || resolve('/', rel) === '/') throw new Error(`Unsafe Dropbox path: ${remotePath}`)
   return rel
 }
@@ -197,6 +250,31 @@ function safeRelative(base: string, remotePath: string): string {
 async function existsAtCorrectSize(destination: string, size: number | undefined): Promise<boolean> {
   if (size === undefined) return false
   try { return (await stat(destination)).size === size } catch { return false }
+}
+
+async function ensureFreeSpace(destination: string, size: number | undefined): Promise<void> {
+  if (size === undefined || !Number.isSafeInteger(size) || size < 0) return
+  let partialSize = 0
+  try { partialSize = (await stat(`${destination}.part`)).size } catch { /* No resumable partial file yet. */ }
+  const remaining = Math.max(0, size - partialSize)
+  if (!remaining) return
+
+  try {
+    const filesystem = await statfs(dirname(destination))
+    const available = Number(filesystem.bavail) * Number(filesystem.bsize)
+    if (Number.isFinite(available) && available < remaining) {
+      throw new Error(`Not enough free disk space for ${destination}: need ${bytesLabel(remaining)}, have ${bytesLabel(available)}.`)
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code && ['ENOSYS', 'ENOTSUP', 'ERR_METHOD_NOT_IMPLEMENTED'].includes(code)) return
+    throw error
+  }
+}
+
+function bytesLabel(value: number): string {
+  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`
+  return `${(value / 1024 ** 3).toFixed(2)} GB`
 }
 
 async function startDownload(items: SelectedItem[], targetDirectory: string): Promise<void> {
@@ -212,7 +290,10 @@ async function startDownload(items: SelectedItem[], targetDirectory: string): Pr
         files.push({ remote: { ...item, id: '', size: undefined }, destination: join(targetDirectory, item.name) })
       } else {
         emitProgress({ type: 'info', message: `Preparing ${item.pathDisplay}…` })
-        const nested = await listFolderRecursive(item.pathDisplay)
+        const basePath = normalizedDropboxPath(item.pathLower)
+        const nested = (await listFolderRecursive(item.pathDisplay)).filter((entry) =>
+          normalizedDropboxPath(entry.pathLower) !== basePath
+        )
         const folderTarget = join(targetDirectory, item.name)
         directories.add(folderTarget)
         for (const entry of nested.filter((entry) => entry.kind === 'folder')) {
@@ -250,6 +331,7 @@ async function startDownload(items: SelectedItem[], targetDirectory: string): Pr
         emitProgress({ type: 'info', message: `Skipped existing ${remote.pathDisplay}`, completedFiles, totalFiles: files.length, bytesDone: finishedBytes, totalBytes })
         continue
       }
+      await ensureFreeSpace(destination, remote.size)
       emitProgress({ type: 'info', message: `Downloading ${remote.pathDisplay}`, completedFiles, totalFiles: files.length, bytesDone: finishedBytes, totalBytes })
       const config = await validConfig()
       await downloadFile(dbx, remote.pathDisplay, destination, {

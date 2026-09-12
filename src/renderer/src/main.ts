@@ -11,9 +11,10 @@ const state: {
   selected: Map<string, TreeNode>
   logs: TransferEvent[]
   busy: boolean
+  treeBusy: boolean
   authInProgress: boolean
 } = {
-  authenticated: false, configured: false, configPath: '', targetDirectory: '', roots: [], selected: new Map(), logs: [], busy: false, authInProgress: false
+  authenticated: false, configured: false, configPath: '', targetDirectory: '', roots: [], selected: new Map(), logs: [], busy: false, treeBusy: false, authInProgress: false
 }
 
 const bytes = (value = 0): string => {
@@ -57,7 +58,10 @@ function render(): void {
       </section>
       <section class="workspace">
         <div class="card browser"><div class="section-head"><div><h2>Dropbox files</h2><p>${state.authenticated ? 'Select files or folders to queue for download.' : 'Authenticate to load your Dropbox.'}</p></div><span class="count">${state.selected.size} selected</span></div>
-          <div class="tree" id="tree">${state.authenticated ? (state.roots.length ? state.roots.map((node) => nodeMarkup(node)).join('') : '<div class="empty">Loading your Dropbox…</div>') : '<div class="empty">Your file tree will appear here.</div>'}</div>
+          <div class="tree-panel" aria-busy="${state.treeBusy}">
+            <div class="tree" id="tree">${state.authenticated ? (state.roots.length ? state.roots.map((node) => nodeMarkup(node)).join('') : '<div class="empty">Loading your Dropbox…</div>') : '<div class="empty">Your file tree will appear here.</div>'}</div>
+            ${state.treeBusy ? '<div class="tree-blocker" role="status" aria-live="polite"><div class="tree-loading"><div class="tree-progress"><i></i></div><span>Loading folder…</span></div></div>' : ''}
+          </div>
         </div>
         <div class="side">
           <div class="card destination"><div class="section-head"><div><h2>Save to</h2><p>Choose a folder on your computer.</p></div></div>
@@ -83,11 +87,18 @@ function findNode(path: string, nodes = state.roots): TreeNode | undefined {
 }
 
 async function loadChildren(node: TreeNode): Promise<void> {
-  if (node.loaded) return
+  if (node.loaded || state.treeBusy) return
+  state.treeBusy = true
   node.loading = true; render()
   try { node.children = (await window.dropboxApp.listFolder(node.pathDisplay)).map((entry) => ({ ...entry })); node.loaded = true }
   catch (error) { addLog({ type: 'error', message: error instanceof Error ? error.message : 'Could not load folder.' }) }
-  finally { node.loading = false; render() }
+  finally { node.loading = false; state.treeBusy = false; render() }
+}
+
+async function loadRootEntries(): Promise<void> {
+  state.treeBusy = true; render()
+  try { state.roots = (await window.dropboxApp.listFolder('')).map((entry) => ({ ...entry })) }
+  finally { state.treeBusy = false; render() }
 }
 
 function addLog(event: TransferEvent): void { state.logs.push(event); render() }
@@ -111,7 +122,7 @@ async function finishAuth(): Promise<void> {
   try {
     await window.dropboxApp.finishAuthentication(code)
     state.authenticated = true; state.authInProgress = false
-    state.roots = (await window.dropboxApp.listFolder('')).map((entry) => ({ ...entry }))
+    await loadRootEntries()
     addLog({ type: 'success', message: 'Dropbox authenticated. Your files are ready to browse.' })
   } catch (error) {
     addLog({ type: 'error', message: error instanceof Error ? error.message : 'Authentication failed.' })
@@ -133,7 +144,9 @@ function bindEvents(): void {
   })
   document.querySelectorAll<HTMLButtonElement>('[data-expand]').forEach((button) => button.addEventListener('click', async () => {
     const node = findNode(button.dataset.expand!); if (!node) return
-    node.expanded = !node.expanded; if (node.expanded) await loadChildren(node); else render()
+    node.expanded = !node.expanded
+    if (node.expanded) await loadChildren(node)
+    render()
   }))
   document.querySelectorAll<HTMLInputElement>('[data-select]').forEach((box) => box.addEventListener('change', () => {
     const node = findNode(box.dataset.select!); if (!node) return
@@ -146,7 +159,7 @@ window.dropboxApp.onProgress(addLog)
 window.dropboxApp.getSettings().then(async (settings) => {
   state.configured = settings.configured; state.configPath = settings.configPath; state.authenticated = settings.authenticated
   if (state.authenticated) {
-    try { state.roots = (await window.dropboxApp.listFolder('')).map((entry) => ({ ...entry })) }
+    try { await loadRootEntries() }
     catch (error) { state.authenticated = false; addLog({ type: 'error', message: error instanceof Error ? error.message : 'Saved Dropbox session could not be restored.' }) }
   }
   render()
