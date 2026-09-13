@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
 import { Dropbox, downloadFile } from 'dropbox'
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdir, readFile, rename, stat, statfs, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, statfs, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 
 const SETTINGS_FILE = () => join(app.getPath('userData'), 'settings.bin')
@@ -252,6 +252,10 @@ async function existsAtCorrectSize(destination: string, size: number | undefined
   try { return (await stat(destination)).size === size } catch { return false }
 }
 
+async function removeStalePartial(destination: string): Promise<void> {
+  await rm(`${destination}.part`, { force: true })
+}
+
 async function ensureFreeSpace(destination: string, size: number | undefined): Promise<void> {
   if (size === undefined || !Number.isSafeInteger(size) || size < 0) return
   let partialSize = 0
@@ -325,6 +329,9 @@ async function startDownload(items: SelectedItem[], targetDirectory: string): Pr
     const dbx = await client()
     for (const { remote, destination } of files) {
       await mkdir(dirname(destination), { recursive: true })
+      // A new run intentionally starts incomplete files from scratch. The SDK
+      // still uses a .part file for retries within this run.
+      await removeStalePartial(destination)
       if (await existsAtCorrectSize(destination, remote.size)) {
         completedFiles += 1
         finishedBytes += remote.size ?? 0
@@ -358,8 +365,8 @@ async function startDownload(items: SelectedItem[], targetDirectory: string): Pr
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1180,
-    height: 780,
+    width: 1280,
+    height: 900,
     minWidth: 900,
     minHeight: 640,
     title: 'Dropbox Download Manager',

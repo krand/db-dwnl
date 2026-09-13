@@ -41,8 +41,8 @@ After installing, copy `app.config.example.json` to the user-data config path re
 
 - The Dropbox tree is loaded on demand.
 - File and folder selections are expanded into a transfer queue.
-- The official Dropbox SDK streams downloads to `.part` files, uses ranged parallel requests for large files (including 10 GB files), resumes interrupted transfers, retries recoverable failures, and validates completed content before the file is committed.
-- Before each download, the app checks the destination volume for enough free space, accounting for any existing `.part` file.
+- The official Dropbox SDK streams downloads to `.part` files, uses ranged parallel requests for large files (including 10 GB files), retries recoverable failures within a run, and validates completed content before the file is committed. A new run removes any leftover `.part` file and restarts that incomplete file cleanly.
+- Before each download, the app checks the destination volume for enough free space for a fresh copy.
 - Existing successful files are skipped when their size matches Dropbox metadata.
 
 Credentials are stored using Electron's operating-system-backed `safeStorage` facility where the platform provides it.
