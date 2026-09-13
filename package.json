@@ -1,6 +1,6 @@
 {
   "name": "dropbox-download-manager",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A resilient desktop downloader for Dropbox folders and files.",
   "main": "./out/main/index.js",
   "scripts": {

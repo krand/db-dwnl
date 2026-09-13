@@ -2,6 +2,8 @@
 
 A small Electron desktop app for selecting Dropbox files or folders and downloading them through a resilient local transfer queue.
 
+![screen.png](.github/assets/screen.png)
+
 ## Setup
 
 1. Create a Dropbox API app in the [Dropbox App Console](https://www.dropbox.com/developers/apps), then grant it the `files.metadata.read` and `files.content.read` scopes. For full-account browsing, choose **Full Dropbox** access; choose **App folder** if that restricted scope is sufficient.
@@ -36,6 +38,26 @@ npm run dist:linux
 Artifacts are written to `release/`: DMG and ZIP on macOS, an NSIS setup executable on Windows, and AppImage/DEB packages on Linux. Build each platform on that platform when possible, especially for signed releases.
 
 After installing, copy `app.config.example.json` to the user-data config path reported by the app and set `dropbox.appKey`. Do not package access tokens or `settings.bin`; they are created per user after authentication.
+
+## app.config.json
+
+The App main goal was to fix buggy behavior of `dbxcli` and it's mostly repeat its functionality of browsing and downloading the dropbox files. Taking that just for the testing purposes before registering your own dropbox oauth app, you can try to use original `dbxcli` app id:
+```json
+{
+  "dropbox": {
+    "appKey": "<< Value from https://github.com/dropbox/dbxcli/blob/e3b771cb79e693452174201ea19d5d7062d18174/cmd/root.go#L37 >>",
+    "authorizationUrl": "https://www.dropbox.com/oauth2/authorize",
+    "tokenUrl": "https://api.dropboxapi.com/oauth2/token",
+    "tokenAccessType": "offline",
+    "scopes": []
+  },
+  "downloads": {
+    "parallelDownloads": 4,
+    "maxAttempts": 3,
+    "retryDelayMs": 500
+  }
+}
+```
 
 ## Download behaviour
 
