@@ -46,6 +46,9 @@ function nodeMarkup(node: TreeNode, depth = 0): string {
 }
 
 function render(): void {
+  const previousTree = document.querySelector<HTMLDivElement>('#tree')
+  const treeScrollTop = previousTree?.scrollTop ?? 0
+  const treeScrollLeft = previousTree?.scrollLeft ?? 0
   const lastLog = state.logs.at(-1)
   const percent = lastLog?.totalBytes ? Math.min(100, Math.round((lastLog.bytesDone ?? 0) / lastLog.totalBytes * 100)) : 0
   const authPanel = state.authInProgress ? `
@@ -78,6 +81,9 @@ function render(): void {
         </div>
       </section>
     </main>`
+  const tree = document.querySelector<HTMLDivElement>('#tree')!
+  tree.scrollTop = treeScrollTop
+  tree.scrollLeft = treeScrollLeft
   bindEvents()
 }
 
