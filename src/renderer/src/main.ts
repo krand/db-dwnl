@@ -11,10 +11,11 @@ const state: {
   selected: Map<string, TreeNode>
   logs: TransferEvent[]
   busy: boolean
+  downloading: boolean
   treeBusy: boolean
   authInProgress: boolean
 } = {
-  authenticated: false, configured: false, configPath: '', targetDirectory: '', roots: [], selected: new Map(), logs: [], busy: false, treeBusy: false, authInProgress: false
+  authenticated: false, configured: false, configPath: '', targetDirectory: '', roots: [], selected: new Map(), logs: [], busy: false, downloading: false, treeBusy: false, authInProgress: false
 }
 
 const bytes = (value = 0): string => {
@@ -46,6 +47,7 @@ function nodeMarkup(node: TreeNode, depth = 0): string {
 }
 
 function render(): void {
+  const treeDisabled = state.treeBusy || state.downloading
   const previousTree = document.querySelector<HTMLDivElement>('#tree')
   const treeScrollTop = previousTree?.scrollTop ?? 0
   const treeScrollLeft = previousTree?.scrollLeft ?? 0
@@ -64,9 +66,9 @@ function render(): void {
       </section>
       <section class="workspace">
         <div class="card browser"><div class="section-head"><div><h2>Dropbox files</h2><p>${state.authenticated ? 'Select files or folders to queue for download.' : 'Authenticate to load your Dropbox.'}</p></div><span class="count">${state.selected.size} selected</span></div>
-          <div class="tree-panel" aria-busy="${state.treeBusy}">
-            <div class="tree" id="tree">${state.authenticated ? (state.roots.length ? state.roots.map((node) => nodeMarkup(node)).join('') : '<div class="empty">Loading your Dropbox…</div>') : '<div class="empty">Your file tree will appear here.</div>'}</div>
-            ${state.treeBusy ? '<div class="tree-blocker" role="status" aria-live="polite"><div class="tree-loading"><div class="tree-progress"><i></i></div><span>Loading folder…</span></div></div>' : ''}
+          <div class="tree-panel" aria-busy="${treeDisabled}">
+            <div class="tree" id="tree" ${treeDisabled ? 'inert aria-disabled="true"' : ''}>${state.authenticated ? (state.roots.length ? state.roots.map((node) => nodeMarkup(node)).join('') : '<div class="empty">Loading your Dropbox…</div>') : '<div class="empty">Your file tree will appear here.</div>'}</div>
+            ${treeDisabled ? `<div class="tree-blocker" role="status" aria-live="polite"><div class="tree-loading">${state.downloading ? '' : '<div class="tree-progress"><i></i></div>'}<span>${state.downloading ? 'Download in progress. Browsing will resume when it finishes.' : 'Loading folder…'}</span></div></div>` : ''}
           </div>
         </div>
         <div class="side">
@@ -96,7 +98,7 @@ function findNode(path: string, nodes = state.roots): TreeNode | undefined {
 }
 
 async function loadChildren(node: TreeNode, refresh = false): Promise<void> {
-  if ((!refresh && node.loaded) || state.treeBusy) return
+  if ((!refresh && node.loaded) || state.treeBusy || state.downloading) return
   state.treeBusy = true
   node.loading = true; render()
   try {
@@ -142,7 +144,7 @@ async function loadRootEntries(): Promise<void> {
 }
 
 async function showFolderSize(node: TreeNode): Promise<void> {
-  if (node.sizeLoading) return
+  if (node.sizeLoading || state.downloading) return
   node.sizeLoading = true; node.sizeError = undefined; render()
   try { node.size = await window.dropboxApp.getFolderSize(node.pathDisplay) }
   catch (error) {
@@ -187,23 +189,27 @@ function bindEvents(): void {
   document.querySelector('#finish-auth')?.addEventListener('click', finishAuth)
   document.querySelector('#choose-folder')?.addEventListener('click', async () => { const folder = await window.dropboxApp.chooseDirectory(); if (folder) { state.targetDirectory = folder; render() } })
   document.querySelector('#download')?.addEventListener('click', async () => {
-    state.busy = true; state.logs = []; render()
+    if (state.busy) return
+    state.busy = true; state.downloading = true; state.logs = []; render()
     try { await window.dropboxApp.startDownload([...state.selected.values()], state.targetDirectory) }
     catch { /* The main process already supplied an actionable log event. */ }
-    finally { state.busy = false; render() }
+    finally { state.busy = false; state.downloading = false; render() }
   })
   document.querySelectorAll<HTMLButtonElement>('[data-expand]').forEach((button) => button.addEventListener('click', async () => {
+    if (state.treeBusy || state.downloading) return
     const node = findNode(button.dataset.expand!); if (!node) return
     node.expanded = !node.expanded
     if (node.expanded) await loadChildren(node)
     render()
   }))
   document.querySelectorAll<HTMLInputElement>('[data-select]').forEach((box) => box.addEventListener('change', () => {
+    if (state.treeBusy || state.downloading) return
     const node = findNode(box.dataset.select!); if (!node) return
     if (box.checked) state.selected.set(node.pathLower, node); else state.selected.delete(node.pathLower)
     render()
   }))
   document.querySelectorAll<HTMLButtonElement>('[data-folder-actions]').forEach((button) => button.addEventListener('click', async () => {
+    if (state.treeBusy || state.downloading) return
     const node = findNode(button.dataset.folderActions!); if (!node || node.sizeLoading) return
     try {
       const action = await window.dropboxApp.showFolderActions()
