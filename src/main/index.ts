@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, powerSaveBlocker, safeStorage, shell } from 'electron'
 import { Dropbox, downloadFile } from 'dropbox'
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, readFile, rename, rm, stat, statfs, writeFile } from 'node:fs/promises'
@@ -301,7 +301,9 @@ async function startDownload(items: SelectedItem[], targetDirectory: string): Pr
   if (!items.length) throw new Error('Select at least one Dropbox file or folder.')
   if (!targetDirectory) throw new Error('Choose a target folder first.')
   transferRunning = true
+  let sleepBlockerId: number | undefined
   try {
+    sleepBlockerId = powerSaveBlocker.start('prevent-app-suspension')
     const files: Array<{ remote: DropboxEntry; destination: string }> = []
     const directories = new Set<string>()
     for (const item of items) {
@@ -375,6 +377,7 @@ async function startDownload(items: SelectedItem[], targetDirectory: string): Pr
     throw error
   } finally {
     transferRunning = false
+    if (sleepBlockerId !== undefined) powerSaveBlocker.stop(sleepBlockerId)
   }
 }
 
