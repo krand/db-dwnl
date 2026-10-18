@@ -20,11 +20,12 @@ type DropboxEntry = {
   kind: 'file' | 'folder'
   size?: number
 }
-type SelectedItem = Pick<DropboxEntry, 'pathDisplay' | 'pathLower' | 'kind' | 'name'>
-type ProgressEvent = { type: 'info' | 'success' | 'error'; message: string; completedFiles?: number; totalFiles?: number; bytesDone?: number; totalBytes?: number }
+type SelectedItem = Pick<DropboxEntry, 'pathDisplay' | 'pathLower' | 'kind' | 'name' | 'size'>
+type ProgressEvent = { type: 'info' | 'success' | 'error' | 'progress'; message: string; completedFiles?: number; totalFiles?: number; bytesDone?: number; totalBytes?: number }
 
 let mainWindow: BrowserWindow | null = null
 let transferRunning = false
+let lastByteProgressSentAt = -Infinity
 let pendingAuth: { appKey: string; verifier: string; state: string } | null = null
 
 const defaultConfig: AppConfig = {
@@ -64,7 +65,12 @@ async function validConfig(): Promise<AppConfig> {
 }
 
 function emitProgress(event: ProgressEvent): void {
-  mainWindow?.webContents.send('download:progress', event)
+  if (event.type === 'progress') {
+    const now = Date.now()
+    if (now - lastByteProgressSentAt < 100) return
+    lastByteProgressSentAt = now
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('download:progress', event)
 }
 
 function encryptedSettings(data: Settings): Buffer {
@@ -301,6 +307,7 @@ async function startDownload(items: SelectedItem[], targetDirectory: string): Pr
   if (!items.length) throw new Error('Select at least one Dropbox file or folder.')
   if (!targetDirectory) throw new Error('Choose a target folder first.')
   transferRunning = true
+  lastByteProgressSentAt = -Infinity
   let sleepBlockerId: number | undefined
   try {
     sleepBlockerId = powerSaveBlocker.start('prevent-app-suspension')
@@ -308,7 +315,7 @@ async function startDownload(items: SelectedItem[], targetDirectory: string): Pr
     const directories = new Set<string>()
     for (const item of items) {
       if (item.kind === 'file') {
-        files.push({ remote: { ...item, id: '', size: undefined }, destination: join(targetDirectory, item.name) })
+        files.push({ remote: { ...item, id: '' }, destination: join(targetDirectory, item.name) })
       } else {
         emitProgress({ type: 'info', message: `Preparing ${item.pathDisplay}…` })
         const basePath = normalizedDropboxPath(item.pathLower)
@@ -363,7 +370,7 @@ async function startDownload(items: SelectedItem[], targetDirectory: string): Pr
         maxAttempts: config.downloads.maxAttempts,
         retryDelay: config.downloads.retryDelayMs,
         progress: ({ bytesWritten }: { bytesWritten: number }) => emitProgress({
-          type: 'info', message: `Downloading ${remote.name}`,
+          type: 'progress', message: `Downloading ${remote.name}`,
           completedFiles, totalFiles: files.length, bytesDone: finishedBytes + bytesWritten, totalBytes
         })
       })
@@ -388,7 +395,7 @@ function createWindow(): void {
     minWidth: 900,
     minHeight: 640,
     title: 'Dropbox Download Manager',
-    webPreferences: { preload: join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false }
+    webPreferences: { preload: join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, backgroundThrottling: false }
   })
   mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL ?? `file://${join(__dirname, '../renderer/index.html')}`)
 }

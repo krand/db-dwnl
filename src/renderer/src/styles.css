@@ -8,3 +8,4 @@ main { max-width: 1400px; padding: 46px clamp(28px, 5vw, 76px); margin: auto; } 
 @media (max-width: 940px) { .workspace { grid-template-columns: 1fr; }.side { grid-template-columns: 1fr 1fr; }.activity { grid-column: span 2; } }
 
 .folder-actions { margin-left: 4px; width: 26px; height: 26px; border-radius: 5px; background: transparent; color: #596579; font-size: 20px; line-height: 1; }.folder-actions:hover { background: #e2e8fa; }.folder-actions:focus-visible { outline: 2px solid #4361ee; outline-offset: 1px; }
+.log { max-height: 320px; overflow-y: auto; overflow-wrap: anywhere; }

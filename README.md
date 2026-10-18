@@ -66,6 +66,7 @@ The App main goal was to fix buggy behavior of `dbxcli` and it's mostly repeat i
 - Choose **Refresh** in that menu to reload the folder's immediate contents from Dropbox. Existing selections and expanded branches are kept for unchanged entries; removed entries are cleared from the selection.
 - File and folder selections are expanded into a transfer queue.
 - Automatic system sleep is prevented while the download queue is being prepared or processed; the screen can still turn off. Normal sleep behavior resumes when the queue completes or fails.
+- Transfer progress continues updating while the window is inactive. Byte updates are batched separately from a scrollable history of the latest 200 activity messages, so completed-file messages remain visible while another file downloads.
 - The official Dropbox SDK streams downloads to `.part` files, uses ranged parallel requests for large files (including 10 GB files), retries recoverable failures within a run, and validates completed content before the file is committed. A new run removes any leftover `.part` file and restarts that incomplete file cleanly.
 - Before each download, the app checks the destination volume for enough free space for a fresh copy.
 - Existing successful files are skipped when their size matches Dropbox metadata.

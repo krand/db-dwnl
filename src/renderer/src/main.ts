@@ -10,13 +10,17 @@ const state: {
   roots: TreeNode[]
   selected: Map<string, TreeNode>
   logs: TransferEvent[]
+  progress: { completedFiles: number; totalFiles: number; bytesDone: number; totalBytes: number }
+  transferMessage: string
   busy: boolean
   downloading: boolean
   treeBusy: boolean
   authInProgress: boolean
 } = {
-  authenticated: false, configured: false, configPath: '', targetDirectory: '', roots: [], selected: new Map(), logs: [], busy: false, downloading: false, treeBusy: false, authInProgress: false
+  authenticated: false, configured: false, configPath: '', targetDirectory: '', roots: [], selected: new Map(), logs: [], progress: { completedFiles: 0, totalFiles: 0, bytesDone: 0, totalBytes: 0 }, transferMessage: '', busy: false, downloading: false, treeBusy: false, authInProgress: false
 }
+
+let activityRenderTimer: ReturnType<typeof setTimeout> | undefined
 
 const bytes = (value = 0): string => {
   if (!value) return '0 B'
@@ -46,13 +50,32 @@ function nodeMarkup(node: TreeNode, depth = 0): string {
   </div>`
 }
 
+function activityMarkup(): string {
+  const { completedFiles, totalFiles, bytesDone, totalBytes } = state.progress
+  const percent = totalBytes ? Math.min(100, Math.round(bytesDone / totalBytes * 100)) : 0
+  return `<div class="section-head"><div><h2>Transfer progress</h2><p>${percent}% complete</p></div><strong>${percent}%</strong></div><div class="meter"><i style="width:${percent}%"></i></div>
+    <div class="summary">${completedFiles} of ${totalFiles} files · ${bytes(bytesDone)} of ${bytes(totalBytes)}${state.transferMessage ? `<br />${escape(state.transferMessage)}` : ''}</div>
+    <div class="log">${state.logs.length ? state.logs.slice().reverse().map((log) => `<p class="${log.type}"><b>${log.type === 'error' ? '!' : log.type === 'success' ? '✓' : '·'}</b>${escape(log.message)}</p>`).join('') : '<p class="quiet">Transfer messages will appear here.</p>'}</div>`
+}
+
+function renderActivity(): void {
+  clearTimeout(activityRenderTimer)
+  activityRenderTimer = undefined
+  const activity = document.querySelector<HTMLDivElement>('.activity')
+  if (activity) {
+    const scrollTop = activity.querySelector<HTMLDivElement>('.log')?.scrollTop ?? 0
+    activity.innerHTML = activityMarkup()
+    activity.querySelector<HTMLDivElement>('.log')!.scrollTop = scrollTop
+  }
+}
+
 function render(): void {
+  clearTimeout(activityRenderTimer)
+  activityRenderTimer = undefined
   const treeDisabled = state.treeBusy || state.downloading
   const previousTree = document.querySelector<HTMLDivElement>('#tree')
   const treeScrollTop = previousTree?.scrollTop ?? 0
   const treeScrollLeft = previousTree?.scrollLeft ?? 0
-  const lastLog = state.logs.at(-1)
-  const percent = lastLog?.totalBytes ? Math.min(100, Math.round((lastLog.bytesDone ?? 0) / lastLog.totalBytes * 100)) : 0
   const authPanel = state.authInProgress ? `
     <div class="auth-code"><label for="authorization-code">Authorization code</label><div><input id="authorization-code" placeholder="Paste the code shown by Dropbox" autofocus /><button id="finish-auth" class="primary" ${state.busy ? 'disabled' : ''}>Connect</button></div><p>Approve access in the browser, then paste the code here. <button id="reopen-auth" class="text-button">Open Dropbox again</button></p></div>` : ''
   document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
@@ -76,10 +99,7 @@ function render(): void {
             <div class="path"><span title="${escape(state.targetDirectory)}">${state.targetDirectory ? escape(state.targetDirectory) : 'No destination selected'}</span><button id="choose-folder" ${state.busy ? 'disabled' : ''}>Choose folder</button></div>
             <button id="download" class="download" ${!state.authenticated || !state.targetDirectory || !state.selected.size || state.busy ? 'disabled' : ''}>${state.busy ? 'Downloading…' : `Download ${state.selected.size || ''}`}</button>
           </div>
-          <div class="card activity"><div class="section-head"><div><h2>Transfer progress</h2><p>${percent}% complete</p></div><strong>${percent}%</strong></div><div class="meter"><i style="width:${percent}%"></i></div>
-            <div class="summary">${lastLog?.completedFiles ?? 0} of ${lastLog?.totalFiles ?? 0} files · ${bytes(lastLog?.bytesDone)} of ${bytes(lastLog?.totalBytes)}</div>
-            <div class="log">${state.logs.length ? state.logs.slice(-8).reverse().map((log) => `<p class="${log.type}"><b>${log.type === 'error' ? '!' : log.type === 'success' ? '✓' : '·'}</b>${escape(log.message)}</p>`).join('') : '<p class="quiet">Transfer messages will appear here.</p>'}</div>
-          </div>
+          <div class="card activity">${activityMarkup()}</div>
         </div>
       </section>
     </main>`
@@ -153,7 +173,17 @@ async function showFolderSize(node: TreeNode): Promise<void> {
   } finally { node.sizeLoading = false; render() }
 }
 
-function addLog(event: TransferEvent): void { state.logs.push(event); render() }
+function addLog(event: TransferEvent): void {
+  for (const key of ['completedFiles', 'totalFiles', 'bytesDone', 'totalBytes'] as const) {
+    if (event[key] !== undefined) state.progress[key] = event[key]
+  }
+  state.transferMessage = event.message
+  if (event.type !== 'progress') {
+    state.logs.push(event)
+    if (state.logs.length > 200) state.logs.splice(0, state.logs.length - 200)
+  }
+  if (activityRenderTimer === undefined) activityRenderTimer = setTimeout(renderActivity, 100)
+}
 
 async function beginAuth(): Promise<void> {
   state.busy = true; render()
@@ -190,7 +220,8 @@ function bindEvents(): void {
   document.querySelector('#choose-folder')?.addEventListener('click', async () => { const folder = await window.dropboxApp.chooseDirectory(); if (folder) { state.targetDirectory = folder; render() } })
   document.querySelector('#download')?.addEventListener('click', async () => {
     if (state.busy) return
-    state.busy = true; state.downloading = true; state.logs = []; render()
+    state.busy = true; state.downloading = true; state.logs = []
+    state.progress = { completedFiles: 0, totalFiles: 0, bytesDone: 0, totalBytes: 0 }; state.transferMessage = ''; render()
     try { await window.dropboxApp.startDownload([...state.selected.values()], state.targetDirectory) }
     catch { /* The main process already supplied an actionable log event. */ }
     finally { state.busy = false; state.downloading = false; render() }
@@ -222,6 +253,8 @@ function bindEvents(): void {
 }
 
 window.dropboxApp.onProgress(addLog)
+window.addEventListener('focus', renderActivity)
+document.addEventListener('visibilitychange', () => { if (!document.hidden) renderActivity() })
 window.dropboxApp.getSettings().then(async (settings) => {
   state.configured = settings.configured; state.configPath = settings.configPath; state.authenticated = settings.authenticated
   if (state.authenticated) {
