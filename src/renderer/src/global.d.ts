@@ -7,6 +7,8 @@ declare global {
       beginAuthentication(): Promise<string>
       finishAuthentication(code: string): Promise<{ authenticated: boolean }>
       listFolder(path: string): Promise<DropboxEntry[]>
+      getFolderSize(path: string): Promise<number>
+      showFolderActions(): Promise<'show-folder-size' | 'refresh' | null>
       chooseDirectory(): Promise<string>
       startDownload(items: Array<Pick<DropboxEntry, 'pathDisplay' | 'pathLower' | 'kind' | 'name'>>, directory: string): Promise<void>
       onProgress(callback: (event: TransferEvent) => void): () => void

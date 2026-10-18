@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, shell } from 'electron'
 import { Dropbox, downloadFile } from 'dropbox'
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, readFile, rename, rm, stat, statfs, writeFile } from 'node:fs/promises'
@@ -210,11 +210,20 @@ function toEntry(entry: any): DropboxEntry {
 
 async function listFolder(path: string): Promise<DropboxEntry[]> {
   const dbx = await client()
-  const { result } = await withNetworkRetry(
+  let { result } = await withNetworkRetry(
     () => dbx.filesListFolder({ path, include_deleted: false }),
     `Listing Dropbox folder ${path || '/'}`
   )
-  return result.entries.map(toEntry).sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name))
+  const entries = [...result.entries]
+  while (result.has_more) {
+    const continuation = await withNetworkRetry(
+      () => dbx.filesListFolderContinue({ cursor: result.cursor }),
+      `Continuing Dropbox folder listing ${path || '/'}`
+    )
+    result = continuation.result
+    entries.push(...result.entries)
+  }
+  return entries.map(toEntry).sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name))
 }
 
 async function listFolderRecursive(path: string): Promise<DropboxEntry[]> {
@@ -233,6 +242,12 @@ async function listFolderRecursive(path: string): Promise<DropboxEntry[]> {
     entries.push(...result.entries)
   }
   return entries.map(toEntry)
+}
+
+async function getFolderSize(path: string): Promise<number> {
+  if (typeof path !== 'string') throw new Error('Choose a Dropbox folder to calculate its size.')
+  const entries = await listFolderRecursive(path)
+  return entries.reduce((total, entry) => total + (entry.kind === 'file' ? entry.size ?? 0 : 0), 0)
 }
 
 function normalizedDropboxPath(path: string): string {
@@ -384,6 +399,14 @@ app.whenReady().then(() => {
   ipcMain.handle('auth:begin', beginAuthentication)
   ipcMain.handle('auth:finish', async (_event, code: string) => { await finishAuthentication(code); return { authenticated: true } })
   ipcMain.handle('dropbox:list-folder', async (_event, path: string) => listFolder(path))
+  ipcMain.handle('dropbox:folder-size', async (_event, path: string) => getFolderSize(path))
+  ipcMain.handle('dropbox:folder-actions', () => new Promise<'show-folder-size' | 'refresh' | null>((resolve) => {
+    const menu = Menu.buildFromTemplate([
+      { label: 'Show folder size', click: () => resolve('show-folder-size') },
+      { label: 'Refresh', click: () => resolve('refresh') }
+    ])
+    menu.popup({ window: mainWindow!, callback: () => resolve(null) })
+  }))
   ipcMain.handle('dialog:select-directory', async () => {
     const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'] })
     return result.canceled ? '' : result.filePaths[0]

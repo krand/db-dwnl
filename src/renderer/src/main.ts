@@ -1,6 +1,6 @@
 import './styles.css'
 
-type TreeNode = DropboxEntry & { loaded?: boolean; expanded?: boolean; loading?: boolean; children?: TreeNode[] }
+type TreeNode = DropboxEntry & { loaded?: boolean; expanded?: boolean; loading?: boolean; children?: TreeNode[]; sizeLoading?: boolean; sizeError?: string }
 
 const state: {
   authenticated: boolean
@@ -32,12 +32,15 @@ function nodeMarkup(node: TreeNode, depth = 0): string {
   const selected = state.selected.has(node.pathLower)
   const chevron = node.kind === 'folder' ? (node.loading ? '…' : node.expanded ? '⌄' : '›') : ''
   const children = node.expanded && node.children ? node.children.map((child) => nodeMarkup(child, depth + 1)).join('') : ''
+  const sizeLabel = node.sizeLoading ? 'Calculating…' : node.sizeError ? 'Error' : node.kind === 'file' || node.size !== undefined ? bytes(node.size) : ''
+  const sizeTitle = node.sizeError ? `${node.sizeError} Use Show folder size to retry.` : node.kind === 'folder' && node.size !== undefined ? `${node.size.toLocaleString()} bytes, including all subfolders. Use Show folder size to recalculate.` : ''
   return `<div class="tree-wrap">
     <div class="tree-row ${selected ? 'selected' : ''}" style="--depth:${depth}" data-path="${escape(node.pathLower)}">
       <button class="expand" data-expand="${escape(node.pathLower)}" ${node.kind === 'folder' ? '' : 'disabled'}>${chevron}</button>
       <input aria-label="Select ${escape(node.name)}" type="checkbox" data-select="${escape(node.pathLower)}" ${selected ? 'checked' : ''} />
       <span class="kind">${node.kind === 'folder' ? '▰' : '▱'}</span><span class="node-name">${escape(node.name)}</span>
-      <span class="node-size">${node.kind === 'file' ? bytes(node.size) : ''}</span>
+      <span class="node-size" ${node.kind === 'folder' ? 'role="status"' : ''} title="${escape(sizeTitle)}">${sizeLabel}</span>
+      ${node.kind === 'folder' ? `<button class="folder-actions" data-folder-actions="${escape(node.pathLower)}" aria-label="Actions for ${escape(node.name)}" aria-haspopup="menu" title="Folder actions" ${node.sizeLoading ? 'disabled' : ''}>⋯</button>` : '<span></span>'}
     </div>${children}
   </div>`
 }
@@ -86,11 +89,42 @@ function findNode(path: string, nodes = state.roots): TreeNode | undefined {
   }
 }
 
-async function loadChildren(node: TreeNode): Promise<void> {
-  if (node.loaded || state.treeBusy) return
+async function loadChildren(node: TreeNode, refresh = false): Promise<void> {
+  if ((!refresh && node.loaded) || state.treeBusy) return
   state.treeBusy = true
   node.loading = true; render()
-  try { node.children = (await window.dropboxApp.listFolder(node.pathDisplay)).map((entry) => ({ ...entry })); node.loaded = true }
+  try {
+    const entries = await window.dropboxApp.listFolder(node.pathDisplay)
+    const previous = new Map(node.children?.map((child) => [child.pathLower, child]))
+    const children = entries.map((entry): TreeNode => {
+      const existing = previous.get(entry.pathLower)
+      if (existing?.id === entry.id && existing?.kind === entry.kind) {
+        previous.delete(entry.pathLower)
+        Object.assign(existing, entry)
+        return existing
+      }
+      return { ...entry }
+    })
+    for (const removed of previous.values()) {
+      for (const path of state.selected.keys()) {
+        if (path === removed.pathLower || path.startsWith(`${removed.pathLower}/`)) state.selected.delete(path)
+      }
+    }
+    node.children = children; node.loaded = true
+    if (refresh) {
+      node.expanded = true
+      // Any containing folder's previous total may now be out of date.
+      const invalidateSize = (nodes: TreeNode[]): void => {
+        for (const folder of nodes) {
+          if (folder.kind === 'folder' && (node.pathLower === folder.pathLower || node.pathLower.startsWith(`${folder.pathLower}/`))) {
+            folder.size = undefined; folder.sizeError = undefined
+          }
+          if (folder.children) invalidateSize(folder.children)
+        }
+      }
+      invalidateSize(state.roots)
+    }
+  }
   catch (error) { addLog({ type: 'error', message: error instanceof Error ? error.message : 'Could not load folder.' }) }
   finally { node.loading = false; state.treeBusy = false; render() }
 }
@@ -99,6 +133,16 @@ async function loadRootEntries(): Promise<void> {
   state.treeBusy = true; render()
   try { state.roots = (await window.dropboxApp.listFolder('')).map((entry) => ({ ...entry })) }
   finally { state.treeBusy = false; render() }
+}
+
+async function showFolderSize(node: TreeNode): Promise<void> {
+  if (node.sizeLoading) return
+  node.sizeLoading = true; node.sizeError = undefined; render()
+  try { node.size = await window.dropboxApp.getFolderSize(node.pathDisplay) }
+  catch (error) {
+    node.sizeError = error instanceof Error ? error.message : 'Could not calculate folder size.'
+    addLog({ type: 'error', message: `Could not calculate size of ${node.name}: ${node.sizeError}` })
+  } finally { node.sizeLoading = false; render() }
 }
 
 function addLog(event: TransferEvent): void { state.logs.push(event); render() }
@@ -152,6 +196,16 @@ function bindEvents(): void {
     const node = findNode(box.dataset.select!); if (!node) return
     if (box.checked) state.selected.set(node.pathLower, node); else state.selected.delete(node.pathLower)
     render()
+  }))
+  document.querySelectorAll<HTMLButtonElement>('[data-folder-actions]').forEach((button) => button.addEventListener('click', async () => {
+    const node = findNode(button.dataset.folderActions!); if (!node || node.sizeLoading) return
+    try {
+      const action = await window.dropboxApp.showFolderActions()
+      if (action === 'show-folder-size') await showFolderSize(node)
+      else if (action === 'refresh') await loadChildren(node, true)
+    } catch (error) {
+      addLog({ type: 'error', message: error instanceof Error ? error.message : 'Could not open folder actions.' })
+    }
   }))
 }
 

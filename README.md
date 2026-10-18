@@ -62,6 +62,8 @@ The App main goal was to fix buggy behavior of `dbxcli` and it's mostly repeat i
 ## Download behaviour
 
 - The Dropbox tree is loaded on demand.
+- Open a folder's three-dot menu and choose **Show folder size** to total all files in that folder and its subfolders. The size appears beside the folder name; choose the action again to recalculate it.
+- Choose **Refresh** in that menu to reload the folder's immediate contents from Dropbox. Existing selections and expanded branches are kept for unchanged entries; removed entries are cleared from the selection.
 - File and folder selections are expanded into a transfer queue.
 - The official Dropbox SDK streams downloads to `.part` files, uses ranged parallel requests for large files (including 10 GB files), retries recoverable failures within a run, and validates completed content before the file is committed. A new run removes any leftover `.part` file and restarts that incomplete file cleanly.
 - Before each download, the app checks the destination volume for enough free space for a fresh copy.
